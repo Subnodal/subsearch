@@ -15,5 +15,5 @@ engine = create_engine(url)
 class Base(DeclarativeBase):
     pass
 
-import node.tables.site
-import node.tables.document
+import node.models.site
+import node.models.document

@@ -1,11 +1,13 @@
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from uuid import UUID
 from sqlalchemy import ForeignKey, Index, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import REGCONFIG
 
 from node.db import Base
-from node.tables.site import Site
+
+if TYPE_CHECKING:
+    from node.models.site import Site
 
 class Document(Base):
     __tablename__ = "document"
@@ -25,7 +27,7 @@ class Document(Base):
     has_login_walls: Mapped[bool] = mapped_column(default=False)
     has_generative_ai_content: Mapped[bool] = mapped_column(default=False)
 
-    site: Mapped[Site] = relationship(back_populates="id")
+    site: Mapped["Site"] = relationship(back_populates="documents")
 
 Index(
     "document_search_idx",
