@@ -1,0 +1,4 @@
+[project]
+name = "subsearch"
+version = "0.1.0"
+description = "The full text search engine backend that powers Subnodal Search."
