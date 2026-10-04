@@ -2,9 +2,6 @@ import sqlalchemy
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase
 
-class Base(DeclarativeBase):
-    pass
-
 url = sqlalchemy.URL.create(
     "postgresql+psycopg2",
     username="subsearch",
@@ -14,3 +11,9 @@ url = sqlalchemy.URL.create(
 )
 
 engine = create_engine(url)
+
+class Base(DeclarativeBase):
+    pass
+
+import node.tables.site
+import node.tables.document

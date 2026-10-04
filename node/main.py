@@ -1,7 +1,7 @@
 import logging
 from flask import Flask, jsonify
 
-import tables.document
+import node.db
 
 logging.basicConfig(level=logging.INFO)
 

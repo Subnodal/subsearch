@@ -1,0 +1,34 @@
+from typing import Optional
+from uuid import UUID
+from sqlalchemy import ForeignKey, Index, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import REGCONFIG
+
+from node.db import Base
+from node.tables.site import Site
+
+class Document(Base):
+    __tablename__ = "document"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, server_default=func.gen_random_uuid())
+    url: Mapped[str]
+    site_id: Mapped[UUID] = mapped_column(ForeignKey("site.id"))
+
+    title: Mapped[str]
+    body: Mapped[str]
+
+    lang_primary: Mapped[Optional[str]]
+    lang_ext: Mapped[Optional[str]]
+    lang_regconfig: Mapped[str] = mapped_column(REGCONFIG)
+
+    has_paywalls: Mapped[bool] = mapped_column(default=False)
+    has_login_walls: Mapped[bool] = mapped_column(default=False)
+    has_generative_ai_content: Mapped[bool] = mapped_column(default=False)
+
+    site: Mapped[Site] = relationship(back_populates="id")
+
+Index(
+    "document_search_idx",
+    func.to_tsvector(Document.lang_regconfig, Document.title + " " + Document.body),
+    postgresql_using="gin"
+)
