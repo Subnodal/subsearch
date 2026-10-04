@@ -40,11 +40,16 @@ def index():
 def ingest_document():
     with Session(node.db.engine) as session:
         data = request.json
-        lang_parts = [None]
+        lang_primary = None
+        lang_ext = None
         uri = urlsplit(data["url"])
 
         if isinstance(data.get("lang"), str) and data.get("lang") != "":
             lang_parts = data.get("lang").split("-")
+            lang_primary = lang_parts[0]
+
+            if len(lang_parts) > 1:
+                lang_ext = "-".join(lang_parts[1:])
 
         session.begin()
 
@@ -62,9 +67,9 @@ def ingest_document():
                 site=site,
                 title=data["title"],
                 body=data["body"],
-                lang_primary=lang_parts[0],
-                lang_ext=lang_parts[1:] or None,
-                lang_regconfig=LANGS.get(lang_parts[0] or "") or "simple",
+                lang_primary=lang_primary,
+                lang_ext=lang_ext,
+                lang_regconfig=LANGS.get(lang_primary or "") or "simple",
                 has_paywalls=data.get("has_paywalls"),
                 has_login_walls=data.get("has_login_walls"),
                 has_generative_ai_content=data.get("has_generative_ai_content")
