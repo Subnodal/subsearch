@@ -27,7 +27,9 @@ def handle_bad_request(error):
     if isinstance(error.description, ValidationError):
         return jsonify({
             "code": "invalid_body",
-            "message": "The provided request body is invalid, either because it contains incorrectly formatted JSON, or is missing a required value."
+            "message": "The provided request body is invalid, either because "
+            "it contains incorrectly formatted JSON, or is missing a required "
+            "value."
         }), 422
 
     return error
@@ -60,13 +62,21 @@ def search_documents():
         if is_stop_words_only:
             ts_query = func.websearch_to_tsquery("simple", query)
 
+        # Text search vector based on combined title and body fields; if query
+        # is made entirely of stop words, then use simple regconfig instead of
+        # regconfig based on document language so that stop words are not
+        # stripped out
         ts_vector = func.to_tsvector(
             "simple" if is_stop_words_only else Document.lang_regconfig,
             Document.title + " " + Document.body
         )
 
-        score = func.ts_rank_cd(ts_vector, ts_query).label("score")
+        # Use rank values as keyword scores; higher values more relevant
+        keyword_score = func.ts_rank_cd(ts_vector, ts_query).label("keyword_score")
 
+        # Use snippet to show short excerpt of body that is relevant to the
+        # query text; keywords that appear in the query are wrapped in double
+        # brace brackets
         snippet = func.ts_headline(
             Document.lang_regconfig,
             func.replace(func.replace(Document.body, "{{", ""), "}}", ""),
@@ -75,9 +85,9 @@ def search_documents():
         ).label("snippet")
 
         results = session.execute(
-            select(Document, score, snippet)
+            select(Document, keyword_score, snippet)
                 .where(ts_vector.bool_op("@@")(ts_query))
-                .order_by(score.desc())
+                .order_by(keyword_score.desc())
                 .limit(10)
         ).all()
 
@@ -86,7 +96,7 @@ def search_documents():
                 "id": result.Document.id,
                 "url": result.Document.url,
                 "title": result.Document.title,
-                "keyword_score": result.score,
+                "keyword_score": result.keyword_score,
                 "snippet": result.snippet
             }, results))
         })
@@ -135,11 +145,15 @@ def ingest_document():
                     if len(lang_parts) > 1:
                         lang_ext = "-".join(lang_parts[1:])
 
+                    # Get existing site based on host or create new site entry
+                    # if nonexistent
                     site = session.scalars(select(Site).filter_by(host=uri.hostname)).first()
 
                     if site is None:
                         site = Site(host=uri.hostname)
 
+                    # Apply site-specific boolean values if not already set for
+                    # this site
                     site.has_consent_or_pay_model = site.has_consent_or_pay_model or document_data.get("has_consent_or_pay_model") or False
                     site.has_advertisements = site.has_advertisements or document_data.get("has_advertisements") or False
 
