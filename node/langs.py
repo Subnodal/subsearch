@@ -1,4 +1,4 @@
-LANGS = {
+LANG_REGCONFIG = {
     "ar": "arabic",
     "ca": "catalan",
     "da": "danish",

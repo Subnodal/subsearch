@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Optional
 from uuid import UUID
-from sqlalchemy import ForeignKey, Index, func
+from sqlalchemy import ForeignKey, Index, func, cast, literal
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import REGCONFIG
 
@@ -29,8 +29,18 @@ class Document(Base):
 
     site: Mapped["Site"] = relationship(back_populates="documents")
 
+# Keyword search index that matches only on same-language queries and excludes
+# stop words
 Index(
-    "document_search_idx",
+    "ix_document_search",
     func.to_tsvector(Document.lang_regconfig, Document.title + " " + Document.body),
+    postgresql_using="gin",
+    postgresql_where=(Document.lang_regconfig != cast(literal("simple"), REGCONFIG))
+)
+
+# Keyword search index that matches any language and includes stop words
+Index(
+    "ix_document_search_simple",
+    func.to_tsvector(literal("simple"), Document.title + " " + Document.body),
     postgresql_using="gin"
 )

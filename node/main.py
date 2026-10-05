@@ -2,11 +2,12 @@ import logging
 from urllib.parse import urlsplit
 from flask import Flask, Response, request, jsonify
 from flask_expects_json import expects_json
-from sqlalchemy import select
+from jsonschema import ValidationError
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 import node.db
-from node.langs import LANGS
+from node.langs import LANG_REGCONFIG
 from node.models.site import Site
 from node.models.document import Document
 
@@ -20,6 +21,68 @@ def index():
     return jsonify({
         "subsearch": "0.1.0"
     })
+
+@app.errorhandler(400)
+def handle_bad_request(error):
+    if isinstance(error.description, ValidationError):
+        return jsonify({
+            "code": "invalid_body",
+            "message": "The provided request body is invalid, either because it contains incorrectly formatted JSON, or is missing a required value."
+        }), 422
+
+    return error
+
+@app.route("/documents", methods=["GET"])
+def search_documents():
+    query = request.args.get("q")
+    query_regconfig = LANG_REGCONFIG["en"]
+
+    if query is None:
+        return jsonify({
+            "code": "missing_required_parameter",
+            "message": "A query is required as URL parameter `q`."
+        }), 422
+
+    query = query.strip()
+
+    if query == "":
+        return jsonify({
+            "code": "invalid_query",
+            "message": "The query must not be empty."
+        })
+
+    with Session(node.db.engine) as session:
+        session.begin()
+
+        tsquery = func.websearch_to_tsquery(query_regconfig, query)
+        is_stop_words_only = session.scalar(select(func.numnode(tsquery))) == 0
+
+        if is_stop_words_only:
+            tsquery = func.websearch_to_tsquery("simple", query)
+
+        results = session.execute(
+            select(
+                Document,
+                func.ts_headline(Document.lang_regconfig, Document.body, tsquery, "StartSel={{,StopSel=}}")
+            )
+                .where(
+                    func.to_tsvector(
+                        "simple" if is_stop_words_only else Document.lang_regconfig,
+                        Document.title + " " + Document.body
+                    )
+                        .bool_op("@@")(tsquery)
+                )
+                .limit(10)
+        ).all()
+
+        return jsonify({
+            "documents": list(map(lambda result: {
+                "id": result[0].id,
+                "url": result[0].url,
+                "title": result[0].title,
+                "synopsis": result[1]
+            }, results))
+        })
 
 @app.route("/documents", methods=["POST"])
 @expects_json({
@@ -39,6 +102,8 @@ def index():
 })
 def ingest_document():
     with Session(node.db.engine) as session:
+        session.begin()
+
         data = request.json
         lang_primary = None
         lang_ext = None
@@ -50,8 +115,6 @@ def ingest_document():
 
             if len(lang_parts) > 1:
                 lang_ext = "-".join(lang_parts[1:])
-
-        session.begin()
 
         try:
             site = session.scalars(select(Site).filter_by(host=uri.hostname)).first()
@@ -69,7 +132,7 @@ def ingest_document():
                 body=data["body"],
                 lang_primary=lang_primary,
                 lang_ext=lang_ext,
-                lang_regconfig=LANGS.get(lang_primary or "") or "simple",
+                lang_regconfig=LANG_REGCONFIG.get(lang_primary or "") or "simple",
                 has_paywalls=data.get("has_paywalls"),
                 has_login_walls=data.get("has_login_walls"),
                 has_generative_ai_content=data.get("has_generative_ai_content")
