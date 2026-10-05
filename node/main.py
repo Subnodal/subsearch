@@ -54,33 +54,40 @@ def search_documents():
     with Session(node.db.engine) as session:
         session.begin()
 
-        tsquery = func.websearch_to_tsquery(query_regconfig, query)
-        is_stop_words_only = session.scalar(select(func.numnode(tsquery))) == 0
+        ts_query = func.websearch_to_tsquery(query_regconfig, query)
+        is_stop_words_only = session.scalar(select(func.numnode(ts_query))) == 0
 
         if is_stop_words_only:
-            tsquery = func.websearch_to_tsquery("simple", query)
+            ts_query = func.websearch_to_tsquery("simple", query)
+
+        ts_vector = func.to_tsvector(
+            "simple" if is_stop_words_only else Document.lang_regconfig,
+            Document.title + " " + Document.body
+        )
+
+        score = func.ts_rank_cd(ts_vector, ts_query).label("score")
+
+        snippet = func.ts_headline(
+            Document.lang_regconfig,
+            func.replace(func.replace(Document.body, "{{", ""), "}}", ""),
+            ts_query,
+            "StartSel={{,StopSel=}}"
+        ).label("snippet")
 
         results = session.execute(
-            select(
-                Document,
-                func.ts_headline(Document.lang_regconfig, Document.body, tsquery, "StartSel={{,StopSel=}}")
-            )
-                .where(
-                    func.to_tsvector(
-                        "simple" if is_stop_words_only else Document.lang_regconfig,
-                        Document.title + " " + Document.body
-                    )
-                        .bool_op("@@")(tsquery)
-                )
+            select(Document, score, snippet)
+                .where(ts_vector.bool_op("@@")(ts_query))
+                .order_by(score.desc())
                 .limit(10)
         ).all()
 
         return jsonify({
             "documents": list(map(lambda result: {
-                "id": result[0].id,
-                "url": result[0].url,
-                "title": result[0].title,
-                "synopsis": result[1]
+                "id": result.Document.id,
+                "url": result.Document.url,
+                "title": result.Document.title,
+                "keyword_score": result.score,
+                "snippet": result.snippet
             }, results))
         })
 
@@ -88,58 +95,69 @@ def search_documents():
 @expects_json({
     "type": "object",
     "properties": {
-        "url": {"type": "string"},
-        "title": {"type": "string"},
-        "body": {"type": "string"},
-        "lang": {"type": "string"},
-        "has_consent_or_pay_model": {"type": "boolean"},
-        "has_advertisements": {"type": "boolean"},
-        "has_paywalls": {"type": "boolean"},
-        "has_login_walls": {"type": "boolean"},
-        "has_generative_ai_content": {"type": "boolean"}
+        "documents": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                    "lang": {"type": "string"},
+                    "has_consent_or_pay_model": {"type": "boolean"},
+                    "has_advertisements": {"type": "boolean"},
+                    "has_paywalls": {"type": "boolean"},
+                    "has_login_walls": {"type": "boolean"},
+                    "has_generative_ai_content": {"type": "boolean"}
+                },
+                "required": ["url", "title", "body"]
+            }
+        }
     },
-    "required": ["url", "title", "body"]
+    "required": ["documents"]
 })
 def ingest_document():
     with Session(node.db.engine) as session:
         session.begin()
 
         data = request.json
-        lang_primary = None
-        lang_ext = None
-        uri = urlsplit(data["url"])
-
-        if isinstance(data.get("lang"), str) and data.get("lang") != "":
-            lang_parts = data.get("lang").split("-")
-            lang_primary = lang_parts[0]
-
-            if len(lang_parts) > 1:
-                lang_ext = "-".join(lang_parts[1:])
 
         try:
-            site = session.scalars(select(Site).filter_by(host=uri.hostname)).first()
+            for document_data in data["documents"]:
+                lang_primary = None
+                lang_ext = None
+                uri = urlsplit(document_data["url"])
 
-            if site is None:
-                site = Site(host=uri.hostname)
+                if isinstance(document_data.get("lang"), str) and document_data.get("lang") != "":
+                    lang_parts = document_data.get("lang").split("-")
+                    lang_primary = lang_parts[0]
 
-            site.has_consent_or_pay_model = site.has_consent_or_pay_model or data.get("has_consent_or_pay_model") or False
-            site.has_advertisements = site.has_advertisements or data.get("has_advertisements") or False
+                    if len(lang_parts) > 1:
+                        lang_ext = "-".join(lang_parts[1:])
 
-            document = Document(
-                url=data["url"],
-                site=site,
-                title=data["title"],
-                body=data["body"],
-                lang_primary=lang_primary,
-                lang_ext=lang_ext,
-                lang_regconfig=LANG_REGCONFIG.get(lang_primary or "") or "simple",
-                has_paywalls=data.get("has_paywalls"),
-                has_login_walls=data.get("has_login_walls"),
-                has_generative_ai_content=data.get("has_generative_ai_content")
-            )
+                    site = session.scalars(select(Site).filter_by(host=uri.hostname)).first()
 
-            session.add(site)
-            session.add(document)
+                    if site is None:
+                        site = Site(host=uri.hostname)
+
+                    site.has_consent_or_pay_model = site.has_consent_or_pay_model or document_data.get("has_consent_or_pay_model") or False
+                    site.has_advertisements = site.has_advertisements or document_data.get("has_advertisements") or False
+
+                    document = Document(
+                        url=document_data["url"],
+                        site=site,
+                        title=document_data["title"],
+                        body=document_data["body"],
+                        lang_primary=lang_primary,
+                        lang_ext=lang_ext,
+                        lang_regconfig=LANG_REGCONFIG.get(lang_primary or "") or "simple",
+                        has_paywalls=document_data.get("has_paywalls"),
+                        has_login_walls=document_data.get("has_login_walls"),
+                        has_generative_ai_content=document_data.get("has_generative_ai_content")
+                    )
+
+                    session.add(site)
+                    session.add(document)
 
             session.commit()
 
