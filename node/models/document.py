@@ -1,6 +1,9 @@
+import enum
 from typing import TYPE_CHECKING, Optional
 from uuid import UUID
-from sqlalchemy import ForeignKey, Index, func, cast, literal
+from datetime import datetime, date
+from sqlalchemy import ForeignKey, Index, CheckConstraint, Enum, func, cast, literal
+from sqlalchemy.types import DateTime, Date
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import REGCONFIG
 
@@ -8,6 +11,27 @@ from node.db import Base
 
 if TYPE_CHECKING:
     from node.models.site import Site
+
+class DatePrecision(enum.Enum):
+    DAY = 1
+    SECOND = 2
+    MILLISECOND = 3
+
+    @staticmethod
+    def from_str(value):
+        return {
+            "day": DatePrecision.DAY,
+            "second": DatePrecision.SECOND,
+            "millisecond": DatePrecision.MILLISECOND
+        }[value]
+
+    @staticmethod
+    def to_str(value):
+        return {
+            DatePrecision.DAY: "day",
+            DatePrecision.SECOND: "second",
+            DatePrecision.MILLISECOND: "millisecond"
+        }[value]
 
 class Document(Base):
     __tablename__ = "document"
@@ -17,23 +41,45 @@ class Document(Base):
     site_id: Mapped[UUID] = mapped_column(ForeignKey("site.id"))
 
     title: Mapped[str]
+    description: Mapped[Optional[str]]
     body: Mapped[str]
 
     lang_primary: Mapped[Optional[str]]
     lang_ext: Mapped[Optional[str]]
     lang_regconfig: Mapped[str] = mapped_column(REGCONFIG)
+    ip_region: Mapped[Optional[str]]
 
-    has_paywalls: Mapped[bool] = mapped_column(default=False)
-    has_login_walls: Mapped[bool] = mapped_column(default=False)
+    crawl_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    publication_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    publication_date_precision: Mapped[Optional[DatePrecision]] = mapped_column(Enum(DatePrecision))
+    access_date: Mapped[Optional[date]] = mapped_column(Date())
+
+    has_paywall: Mapped[bool] = mapped_column(default=False)
+    has_login_wall: Mapped[bool] = mapped_column(default=False)
     has_generative_ai_content: Mapped[bool] = mapped_column(default=False)
 
     site: Mapped["Site"] = relationship(back_populates="documents")
+
+    __table_args__ = (
+        # Ensure that when publication date is present, a precision is
+        # specified, and that when such a date is not present, no precision is
+        # specified
+        CheckConstraint(
+            "(publication_date IS NULL) = (publication_date_precision IS NULL)",
+            "ck_publication_date_precision_optionality_matches_date"
+        ),
+    )
+
+def generate_weighted_ts_vector(regconfig):
+    return func.setweight(func.to_tsvector(regconfig, Document.title), "A").bool_op("||")(
+        func.setweight(func.to_tsvector(regconfig, Document.body), "B")
+    )
 
 # Keyword search index that matches only on same-language queries and excludes
 # stop words
 Index(
     "ix_document_search",
-    func.to_tsvector(Document.lang_regconfig, Document.title + " " + Document.body),
+    generate_weighted_ts_vector(Document.lang_regconfig),
     postgresql_using="gin",
     postgresql_where=(Document.lang_regconfig != cast(literal("simple"), REGCONFIG))
 )
@@ -41,6 +87,6 @@ Index(
 # Keyword search index that matches any language and includes stop words
 Index(
     "ix_document_search_simple",
-    func.to_tsvector(literal("simple"), Document.title + " " + Document.body),
+    generate_weighted_ts_vector(literal("simple")),
     postgresql_using="gin"
 )
