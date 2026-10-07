@@ -101,7 +101,8 @@ def search_documents():
                 "keyword_score": result.keyword_score,
                 "snippet": result.snippet,
                 "ip_region": result.Document.ip_region,
-                "crawl_date": result.Document.crawl_date.isoformat(),
+                "initial_crawl_date": result.Document.initial_crawl_date.isoformat(),
+                "last_crawl_date": result.Document.last_crawl_date.isoformat(),
                 "publication_date": (
                     result.Document.publication_date.isoformat()
                     if result.Document.publication_date is not None
@@ -125,6 +126,8 @@ def search_documents():
                 "type": "object",
                 "properties": {
                     "url": {"type": "string"},
+                    "normalised_url": {"type": "string"},
+                    "digest": {"type": "string"},
                     "title": {"type": "string"},
                     "description": {"type": "string"},
                     "body": {"type": "string"},
@@ -148,7 +151,7 @@ def search_documents():
     },
     "required": ["documents"]
 })
-def ingest_document():
+def ingest_documents():
     with Session(node.db.engine) as session:
         session.begin()
 
@@ -158,7 +161,18 @@ def ingest_document():
             for document_data in data["documents"]:
                 lang_primary = None
                 lang_ext = None
-                uri = urlsplit(document_data["url"])
+                normalised_url = document_data.get("normalised_url") or document_data["url"]
+                normalised_uri = urlsplit(normalised_url)
+                digest = document_data.get("digest")
+
+                if digest is not None:
+                    try:
+                        digest = bytes.fromhex(digest)
+                    except ValueError:
+                        return {
+                            "code": "invalid_body",
+                            "message": "The provided digest is not in hex format."
+                        }, 422
 
                 if isinstance(document_data.get("lang"), str) and document_data.get("lang") != "":
                     lang_parts = document_data.get("lang").split("-")
@@ -202,32 +216,37 @@ def ingest_document():
 
                 # Get existing site based on host or create new site entry
                 # if nonexistent
-                site = session.scalars(select(Site).filter_by(host=uri.hostname)).first()
+                site = session.scalars(select(Site).filter_by(host=normalised_uri.hostname)).first()
 
                 if site is None:
-                    site = Site(host=uri.hostname)
+                    site = Site(host=normalised_uri.hostname)
 
                 # Apply site-specific boolean values if not already set for
                 # this site
                 site.has_consent_or_pay_model = site.has_consent_or_pay_model or document_data.get("has_consent_or_pay_model") or False
                 site.has_advertisements = site.has_advertisements or document_data.get("has_advertisements") or False
 
-                document = Document(
-                    url=document_data["url"],
-                    site=site,
-                    title=document_data["title"],
-                    description=document_data.get("description"),
-                    body=document_data["body"],
-                    lang_primary=lang_primary,
-                    lang_ext=lang_ext,
-                    lang_regconfig=LANG_REGCONFIG.get(lang_primary or "") or "simple",
-                    ip_region=document_data.get("ip_region"),
-                    publication_date=publication_date,
-                    publication_date_precision=publication_date_precision,
-                    has_paywall=document_data.get("has_paywall"),
-                    has_login_wall=document_data.get("has_login_wall"),
-                    has_generative_ai_content=document_data.get("has_generative_ai_content")
-                )
+                document = session.scalars(select(Document).filter_by(normalised_url=normalised_url)).first()
+
+                if document is None:
+                    document = Document(normalised_url=normalised_url)
+
+                document.url = document_data["url"]
+                document.digest = digest
+                document.site = site
+                document.title = document_data["title"]
+                document.description = document_data.get("description")
+                document.body = document_data["body"]
+                document.lang_primary = lang_primary
+                document.lang_ext = lang_ext
+                document.lang_regconfig = LANG_REGCONFIG.get(lang_primary or "") or "simple"
+                document.ip_region = document_data.get("ip_region")
+                document.publication_date = publication_date
+                document.publication_date_precision = publication_date_precision
+                document.has_paywall = document_data.get("has_paywall")
+                document.has_login_wall = document_data.get("has_login_wall")
+                document.has_generative_ai_content = document_data.get("has_generative_ai_content")
+                document.last_crawl_date = func.now()
 
                 session.add(site)
                 session.add(document)
@@ -241,6 +260,50 @@ def ingest_document():
             session.rollback()
 
             return Response(status=500)
+
+@app.route("/document-versions", methods=["POST"])
+@expects_json({
+    "type": "object",
+    "properties": {
+        "normalised_urls": {
+            "type": "array",
+            "items": {"type": "string"}
+        }
+    }
+})
+def check_document_versions():
+    with Session(node.db.engine) as session:
+        session.begin()
+
+        normalised_urls = request.json["normalised_urls"]
+        response_document_data = []
+        non_indexed_urls = []
+
+        for normalised_url in normalised_urls:
+            document = session.scalars(select(Document).filter_by(normalised_url=normalised_url)).first()
+
+            if document is None:
+                non_indexed_urls.append(normalised_url)
+
+                continue
+
+            response_document_data.append({
+                "id": document.id,
+                "url": document.url,
+                "normalised_url": document.normalised_url,
+                "digest": (
+                    document.digest.hex()
+                    if document.digest is not None
+                    else None
+                ),
+                "initial_crawl_date": document.initial_crawl_date.isoformat(),
+                "last_crawl_date": document.last_crawl_date.isoformat()
+            })
+
+        return {
+            "documents": response_document_data,
+            "non_indexed": non_indexed_urls
+        }
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8000)

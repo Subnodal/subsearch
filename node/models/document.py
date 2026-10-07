@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Optional
 from uuid import UUID
 from datetime import datetime, date
 from sqlalchemy import ForeignKey, Index, CheckConstraint, Enum, func, cast, literal
-from sqlalchemy.types import DateTime, Date
+from sqlalchemy.types import DateTime, Date, LargeBinary
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import REGCONFIG
 
@@ -38,6 +38,8 @@ class Document(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, server_default=func.gen_random_uuid())
     url: Mapped[str]
+    normalised_url: Mapped[str] = mapped_column(unique=True)
+    digest: Mapped[Optional[bytes]] = mapped_column(LargeBinary())
     site_id: Mapped[UUID] = mapped_column(ForeignKey("site.id"))
 
     title: Mapped[str]
@@ -49,7 +51,8 @@ class Document(Base):
     lang_regconfig: Mapped[str] = mapped_column(REGCONFIG)
     ip_region: Mapped[Optional[str]]
 
-    crawl_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    initial_crawl_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_crawl_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     publication_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     publication_date_precision: Mapped[Optional[DatePrecision]] = mapped_column(Enum(DatePrecision))
     access_date: Mapped[Optional[date]] = mapped_column(Date())
@@ -75,6 +78,12 @@ def generate_weighted_ts_vector(regconfig):
         func.setweight(func.to_tsvector(regconfig, Document.body), "B")
     )
 
+# Index to check existing documents based on their normalised URL
+Index(
+    "ix_document_normalised_url",
+    Document.normalised_url
+)
+
 # Keyword search index that matches only on same-language queries and excludes
 # stop words
 Index(
@@ -89,4 +98,16 @@ Index(
     "ix_document_search_simple",
     generate_weighted_ts_vector(literal("simple")),
     postgresql_using="gin"
+)
+
+# Index to filter by document publication date
+Index(
+    "ix_document_publication_date",
+    Document.publication_date
+)
+
+# Index to filter by document access date
+Index(
+    "ix_document_access_date",
+    Document.access_date
 )
